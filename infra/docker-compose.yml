@@ -1,0 +1,24 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+
+  meilisearch:
+    image: getmeili/meilisearch:latest
+    container_name: meilisearch
+    environment:
+      MEILI_NO_ANALYTICS: "true"
+      MEILI_ENV: "development"
+      MEILI_MASTER_KEY: "CHANGE_ME_STRONG_KEY"  # Rani 3arf khassni ndir strong key hna
+    ports:
+      - "7700:7700"
+    volumes:
+      - meili_data:/meili_data
+
+volumes:
+  qdrant_storage:
+  meili_data:

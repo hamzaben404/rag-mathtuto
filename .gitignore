@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.sqlite3
+
+# Virtual env
+.venv/
+.env/
+.env.* 
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Jupyter / experiments (if any)
+.ipynb_checkpoints/
+
+# Meilisearch / Qdrant volumes (if created locally)
+infra/meili_data/
+infra/qdrant_storage/
+
+# Other
+*.swp
+*.swo

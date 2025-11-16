@@ -1,0 +1,14 @@
+qdrant-client
+meilisearch
+sentence-transformers
+transformers
+markdown
+beautifulsoup4
+unidecode
+python-dotenv
+uvicorn
+fastapi
+numpy<2
+google-genai
+fastapi
+uvicorn
