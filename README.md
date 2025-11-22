@@ -126,7 +126,9 @@ docker build -t mathtuto-api .
 docker run \
   --rm \
   -p 8000:8000 \
-  --env-file .env \
+  -e GEMINI_API_KEY="AIzaSyBrOLkNpFBrAPwApRVqTJayrhDdnF7qM8Q" \
+  -e GEMINI_MODEL="gemini-2.5-flash" \
+  -e MEILI_API_KEY="CHANGE_ME_STRONG_KEY" \
   mathtuto-api
 ```
 
