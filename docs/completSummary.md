@@ -1,131 +1,277 @@
-Résumé de ce qu’on a fait:
-Je résume en suivant ta timeline logique (et pas tous les petits bugs techniques).
+# Résumé complet – Backend RAG MathTutor (v3)
 
-A. Clarification du scope
-* Projet = Math Tutor SAAS pour 1BAC Science Math (Maroc).
-* Ta brique = “Apprentissage guidé” :uniquement expliquer le cours (pas d’exercices, pas de correction, pas de quiz pour le moment).
-* Focus actuel = chapitre Notion de logique (2 fichiers .md), mais pensés dès le début pour être extensible à tous les chapitres.
+Je résume la **version actuelle** du backend, telle qu’elle est utilisée par
+l’app Next.js `Full-app---AI-Math-Tutor-main`.
 
-B. Choix du stack RAG
-Après réflexion + websearch, on a figé une stack moderne et scalable :
-* Embeddings : intfloat/multilingual-e5-large→ très bon pour texte FR, robuste, open source.
-* Vector store : Qdrant (en Docker)→ stockage des embeddings de tes chunks, recherche sémantique.
-* Lexical search : Meilisearch (en Docker)→ recherche plein-texte rapide, tolérante aux fautes, idéale pour FR.
-* Reranker : BAAI/bge-reranker-v2-m3→ re-trie la liste (Meili + Qdrant) pour mettre les meilleurs passages en haut.
-* LLM : Gemini 2.5 Flash via google-genai→ API, bon raisonnement, bon support FR, free/semi-free pour démarrer.
-Architecture logique retenue côté backend :
-Query → Meili + Qdrant → fusion + reranker → top chunks → prompt LLM → réponse expliquée
+---
 
-C. Préparation des données
-* Tu avais 2 fichiers .md pour le cours de logique.
-* On a défini une stratégie de chunking adaptée au cours :
-    * Un chunk ≈ unité pédagogique (définition, remarque, proposition, exemple, etc.).
-    * Ajout de métadonnées pour chaque chunk :
-        * level (1BAC), track (SM), chapter, subchapter, concept, etc.
-        * content_kind (definition, proposition, exercise, remark, course_example…)
-        * id stable (ex: math_1bac_sm_logic_I_proposition_fonction_propositionnelle_01)
-* Script build_chunks.py → a:
-    * Parsé les .md,
-    * Découpé en 41 chunks,
-    * Sauvegardé dans data/logic/logic_chunks_v1.jsonl.
-Résultat : un “petit catalogue” structuré des morceaux de cours de logique.
+## A. Contexte & Scope
 
-D. Ingestion dans Qdrant (vector store)
-* Script embed_and_qdrant.py :
-    * Charge les 41 chunks,
-    * Encode le body avec multilingual-e5-large (dimension 1024),
-    * Crée la collection Qdrant mathtuto_math_chunks_v1,
-    * Upsert des points (id numérique, vecteur, payload complet du chunk).
-On a réglé :
-* Problèmes de versions numpy / torch,
-* Problème de format d’ID Qdrant (string → int).
-Au final : tes chunks sont correctement indexés dans Qdrant.
+- Projet global : **MathTutor SAAS** pour élèves **1ère année Bac Science Math (Maroc – BIOF)**.
+- Ta brique backend : un **service RAG d’explication de cours**, pas un solveur d’exercices.
+- Rôle principal : agir comme **“Coach de maths”** qui explique le cours en suivant la
+  pédagogie marocaine 1BAC SM.
 
-E. Ingestion dans Meilisearch (lexical)
-* Script ingest_meili.py :
-    * Charge le même logic_chunks_v1.jsonl,
-    * Prépare des docs Meili (id, title, body, tags, etc.),
-    * Crée l’index mathtuto_math_chunks_v1 dans Meili,
-    * Configure les settings (primary key, search fields, ranking rules),
-    * Insère les 41 documents.
-Tu as testé avec une query de test, Meilisearch renvoie les bons documents.
+Scope actuel du backend :
 
-F. Hybrid retrieval + reranker
-* Script test_hybrid_retrieval.py :
-    * Fait une requête Meili (lexical).
-    * Fait une requête Qdrant (vector).
-    * Fusionne les résultats (fused score).
-    * Applique BAAI/bge-reranker-v2-m3 sur les candidates → score de pertinence.
-    * Affiche les top résultats avec id, score, title, body pour différents prompts :
-        * “C’est quoi une proposition logique ?”
-        * “Explique le rôle du quantificateur ∀.”
-        * “C’est quoi une loi de Morgan ?”
-        * etc.
-Tu as vérifié à l’œil que les chunks retournés sont cohérents et que le reranker met en haut les bons passages.
+1. Chapitre couvert : **Notion de logique** (mais design extensible).
+2. Tâche : produire des **explications structurées** à partir des contenus officiels
+   et d’une couche d’intuition.
+3. Pas de correction complète d’exercices (anti-triche).
 
-G. Conception du prompt pédagogique (LLM)
-On a travaillé sérieusement la prompt design pour coller à “Apprentissage guidé” :
-* Rôle : prof de maths marocain, niveau 1BAC SM.
-* Règles RAG :
-    * Utiliser seulement les extraits fournis.
-    * Si info absente → dire qu’on ne peut pas répondre à partir du cours.
-    * Ne pas inventer de nouveaux résultats.
-    * Ne pas ajouter d’exercices corrigés (pour respecter ton scope).
-* Format de réponse structuré en 5 parties :
-    1. Rappel du thème
-    2. Définition / idée clé
-    3. Explication détaillée
-    4. Exemple simple
-    5. À retenir
-Ce prompt est encapsulé dans _build_prompt() dans llm_service.py.
+---
 
-H. Service LLM Gemini
-* Fichier llm_service.py :
-    * Classe LLMService qui :
-        * Lit GEMINI_API_KEY + GEMINI_MODEL,
-        * Instancie genai.Client,
-        * Expose generate_explanation(question, chunks, level, track) :
-            * construit un prompt avec les top chunks,
-            * appelle Gemini,
-            * gère un fallback simple si l’API plante.
-    * Le prompt rappelle le rôle, l’objectif, les règles RAG et le format.
-Tu as testé indirectement : la réponse à “C’est quoi une proposition logique ?” suit ce format.
+## B. Architecture RAG choisie (v3)
 
-I. Service de retrieval
-* Fichier retrieval_service.py :
-    * Classe HybridRetriever :
-        * Se connecte à Meilisearch + Qdrant.
-        * Implémente retrieve(question, top_k) :
-            * Recherche Meili + Qdrant,
-            * Fusionne les résultats,
-            * Applique reranker,
-            * Retourne List[RetrievedChunk] (dataclass).
-C’est le cœur “search” de ton RAG backend.
+Stack actuellle :
 
-J. FastAPI microservice (non Docker, puis Docker)
-1. Fichier src/app.py :
-    * Crée une instance de FastAPI.
-    * Initialise retriever = HybridRetriever(...).
-    * Initialise llm_service = LLMService().
-    * Routes :
-        * GET /health → { "status": "ok" }
-        * POST /explain → prend question, level, track, max_chunks :
-            * appelle retriever.retrieve,
-            * appelle llm_service.generate_explanation,
-            * renvoie { answer, used_chunks }.
-2. Tu l’as testé en local avec uvicorn src.app:app --reload --port 8000.
-3. Puis on a dockerisé ce service :
-    * Création d’un Dockerfile pour l’API :
-        * Base python:3.11-slim,
-        * Installe requirements.txt,
-        * Copie le code,
-        * Configure MEILI_HOST, QDRANT_URL vers host.docker.internal,
-        * Lance uvicorn src.app:app --host 0.0.0.0 --port 8000.
-    * Build de l’image : docker build -t mathtuto-api .
-    * Run :docker run --rm -p 8000:8000 \
-    *   -e GEMINI_API_KEY=... \
-    *   -e GEMINI_MODEL=gemini-2.5-flash \
-    *   -e MEILI_API_KEY=CHANGE_ME_STRONG_KEY \
-    *   mathtuto-api
-  
-    * Test réussi : /health et /explain retournent les bonnes réponses.
+- **Embeddings** : `text-embedding-004` (Gemini).
+- **Vector store** : **Qdrant** (Docker) – recherche sémantique.
+- **Lexical search** : **Meilisearch** (Docker) – BM25, tolérant aux fautes FR.
+- **Reranker** : **Cohere** `rerank-multilingual-v3.0`.
+- **LLM de génération** : **Gemini 2.5 Flash** (`gemini-2.5-flash`).
+
+Pipeline logique :
+
+> Question → Meilisearch + Qdrant → Fusion → Cohere Rerank  
+> → Top chunks (OFFICIEL + COACH) → Gemini → Réponse "Fiche Concept"
+
+---
+
+## C. Données & Chunking
+
+### C.1. Double couche de contenu
+
+Dans `data/logic/` :
+
+- `logique_cours_part1.md`, `logique_cours_part2.md`  
+  → contenu **officiel** du cours.
+- `logique_intuition_part1.md`, `logique_intuition_part2.md`  
+  → couche **COACH** (analogies, intuitions, visualisations).
+
+Chaque chunk porte des métadonnées :
+
+```json
+{
+  "id": "logic_v3_001",
+  "title": "...",
+  "body": "...",
+  "kind": "official | intuition",
+  "source_tag": "[OFFICIEL] | [COACH]",
+  "level": "1BAC",
+  "track": "SM",
+  "chapter": "logique",
+  "source_file": "..."
+}
+```
+
+Le script **`build_chunks.py`** :
+
+* Parse les 4 fichiers `.md`.
+* Découpe par `#` / `##` pour garder des unités pédagogiques cohérentes.
+* Aligne OFFICIEL et COACH sur les mêmes concepts.
+* Sauvegarde dans **`data/logic/logic_chunks_v3.jsonl`**.
+
+---
+
+## D. Ingestion dans Qdrant (embeddings Gemini)
+
+Script : **`embed_and_qdrant.py`**
+
+1. Charge `logic_chunks_v3.jsonl`.
+2. Appelle l’API Gemini **`text-embedding-004`** pour encoder `body`.
+3. Crée / met à jour la collection Qdrant :
+
+   * Nom : `mathtuto_math_chunks_v3`
+   * Distance : cosinus
+   * Vecteurs : dimension de `text-embedding-004`.
+4. Upsert :
+
+   * `point_id` numérique,
+   * vecteur d’embedding,
+   * payload = toutes les métadonnées du chunk.
+
+Résultat : Qdrant peut répondre à des requêtes sémantiques en FR avec
+les métadonnées (OFFICIEL / COACH, niveau, chapitre…).
+
+---
+
+## E. Ingestion dans Meilisearch (BM25)
+
+Script : **`ingest_meili.py`**
+
+1. Recharge `logic_chunks_v3.jsonl`.
+2. Crée l’index :
+
+   * Nom : `mathtuto_math_chunks_v3`.
+   * Clé primaire : `id`.
+3. Configure les settings :
+
+   * `searchableAttributes`: `title`, `body`.
+   * `filterableAttributes`: `level`, `track`, `kind`, `chapter`.
+4. Insère tous les documents.
+
+Résultat : Meilisearch gère la **recherche plein texte**, y compris fautes
+de frappe et vocabulaire FR scolaire.
+
+---
+
+## F. Retrieval hybride + Rerank Cohere
+
+Implémenté dans **`src/retrieval_service.py`** :
+
+* Classe `HybridRetriever` :
+
+  * connexions à Meilisearch + Qdrant,
+  * accès à Cohere via `COHERE_API_KEY`.
+
+Méthode principale : `retrieve(question: str, top_k: int)`.
+
+Étapes :
+
+1. **Lexical** : Meilisearch retourne les meilleurs documents.
+2. **Vectoriel** : Qdrant retourne les voisins sémantiques de la question
+   (embedding Gemini de la question).
+3. **Fusion** : on combine les scores (lexical + vectoriel) pour garder un
+   set candidat.
+4. **Rerank Cohere** :
+
+   * on envoie `(question, chunks)` au modèle
+     `rerank-multilingual-v3.0`,
+   * on récupère les `top_k` chunks les plus pertinents.
+
+Retour : une liste de dataclasses `RetrievedChunk` avec :
+
+* `id`, `title`, `body`,
+* `kind` (`official` / `intuition`),
+* scores de reranking.
+
+---
+
+## G. Prompt pédagogique & LLM Gemini
+
+Implémenté dans **`src/llm_service.py`**.
+
+### G.1. Rôle & contraintes
+
+* Rôle : **prof de maths marocain** pour **1BAC SM**, en français.
+* Travaille **uniquement** à partir des chunks fournis (RAG) :
+
+  * si l’info manque → le dire explicitement,
+  * pas de théorèmes nouveaux,
+  * pas de solutions complètes d’exercices (anti-triche).
+
+### G.2. Format de réponse : “Fiche Concept”
+
+La réponse suit un format fixe :
+
+1. 🎯 **Définition**
+2. 💡 **Intuition (Coach)** – analogies, métaphores, exemples du quotidien.
+3. 🎨 **Visualisation** – texte + éventuels blocs `[Image of ...]`.
+4. ⚠️ **Pièges** – erreurs classiques des élèves 1BAC SM.
+
+Le service `generate_explanation(question, chunks, level, track)` :
+
+* construit un prompt structuré,
+* insère les chunks OFFICIEL + COACH,
+* appelle `gemini-2.5-flash`,
+* renvoie `answer` (markdown) + infos sur les chunks utilisés.
+
+---
+
+## H. FastAPI – Microservice RAG
+
+Implémenté dans **`src/app.py`**.
+
+Composition :
+
+* `retriever = HybridRetriever(...)`
+* `llm_service = LLMService(...)`
+
+Routes :
+
+* `GET /health`
+  → `{"status": "ok"}`
+* `POST /explain`
+  Payload :
+
+  ```json
+  {
+    "question": "Explique le rôle du quantificateur universel.",
+    "level": "1BAC",
+    "track": "SM",
+    "max_chunks": 6
+  }
+  ```
+
+  Pipeline :
+
+  1. `retriever.retrieve(...)`
+  2. `llm_service.generate_explanation(...)`
+  3. Retour :
+
+     ```json
+     {
+       "answer": "...markdown Fiche Concept...",
+       "used_chunks": [
+         { "id": "...", "kind": "official", ... },
+         { "id": "...", "kind": "intuition", ... }
+       ]
+     }
+     ```
+
+---
+
+## I. Dockerisation du backend
+
+Fichiers :
+
+* `infra/docker-compose.yml` → Meilisearch + Qdrant.
+* `Dockerfile` → image `mathtuto-api`.
+
+Points clés :
+
+* L’API tourne sur `uvicorn src.app:app --host 0.0.0.0 --port 8000`.
+* Accès à Meilisearch / Qdrant via `host.docker.internal` (macOS/Windows).
+* Variables d’environnement importantes :
+
+  * `GEMINI_API_KEY`, `GEMINI_MODEL`
+  * `MEILI_HOST`, `MEILI_API_KEY`
+  * `QDRANT_URL`
+  * `COHERE_API_KEY`, `COHERE_RERANK_MODEL` (par défaut : `rerank-multilingual-v3.0`).
+
+Pour les détails : voir `docs/DOCKER.md`.
+
+---
+
+## J. Intégration avec le frontend Next.js (Math Coach)
+
+Dans le projet `Full-app---AI-Math-Tutor-main` :
+
+* La page **`/chat`** expose une UI de chat (assistant-ui).
+
+* Next.js appelle un route handler **`app/api/chat/route.ts`**.
+
+* Ce handler proxy vers notre backend :
+
+  * `POST http://127.0.0.1:8000/explain`
+  * transmet `question, level, track`
+  * récupère `{answer, used_chunks}`.
+
+* La réponse est streamée dans l’UI :
+
+  * rendu Markdown + KaTeX,
+  * affichage des sections Définition / Intuition / Visualisation / Pièges.
+
+Résultat : le backend RAG est maintenant **pleinement intégré** à la
+plateforme MathTutor.
+
+---
+
+## K. Roadmap backend
+
+* Ajouter d’autres chapitres : fonctions, dérivées, barycentre, probas…
+* Ajouter un dataset d’évaluation (questions + “bonne fiche concept”).
+* Raffiner le retrieval (query rewriting, filtres par chapitre).
+* Ajouter des logs + métriques (taux de réutilisation de chunks, temps de réponse).
+* Préparer un déploiement cloud (API + Meili + Qdrant).

@@ -1,19 +1,21 @@
+# src/ingest_meili.py
 import json
 import os
 from pathlib import Path
 from typing import List, Dict
-
 from meilisearch import Client
 
+DATA_PATH = Path("data/logic/logic_chunks_v3.jsonl")
+MEILI_HOST = os.getenv("MEILI_HOST", "http://localhost:7700")
+MEILI_API_KEY = os.getenv("MEILI_API_KEY", "CHANGE_ME_STRONG_KEY") # Ensure this matches your docker setup
+INDEX_NAME = "mathtuto_math_chunks_v3"
 
-MEILI_HOST = os.environ.get("MEILI_HOST", "http://localhost:7700")
-MEILI_API_KEY = os.environ.get("MEILI_API_KEY")  # must be set
-MEILI_INDEX = "mathtuto_math_chunks_v1"
-
-
-def load_chunks(jsonl_path: Path) -> List[Dict]:
+# ---------------------------------------------------------------------
+# LOAD CHUNKS
+# ---------------------------------------------------------------------
+def load_chunks(path: Path) -> List[Dict]:
     chunks: List[Dict] = []
-    with jsonl_path.open("r", encoding="utf-8") as f:
+    with path.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -21,170 +23,122 @@ def load_chunks(jsonl_path: Path) -> List[Dict]:
             chunks.append(json.loads(line))
     return chunks
 
-
+# ---------------------------------------------------------------------
+# MEILISEARCH SETUP
+# ---------------------------------------------------------------------
 def ensure_index(client: Client, index_name: str):
-    """
-    Make sure the index exists, then configure its settings.
-    Compatible with newer Meilisearch Python client.
-    """
-    index = client.index(index_name)
+    """Create index if it doesn't exist, otherwise return it."""
+    
+    # --- FIX START: Handle paginated response format ---
+    response = client.get_indexes()
+    
+    indexes = []
+    if isinstance(response, dict) and "results" in response:
+        # Dictionary response (newer versions)
+        indexes = response["results"]
+    elif hasattr(response, "results"):
+        # Object response (some versions)
+        indexes = response.results
+    else:
+        # Direct list (older versions)
+        indexes = response
+    # --- FIX END ---
 
-    # Try to create the index; if it already exists, ignore the error.
-    try:
-        print(f"[Meili] Creating index '{index_name}' with primaryKey='id' (if not exists)...")
-        client.create_index(uid=index_name, options={"primaryKey": "id"})
-    except Exception:
-        print(f"[Meili] Index '{index_name}' probably already exists.")
+    existing_uids = [idx.uid for idx in indexes]
 
-    # Now configure settings on the index
+    if index_name in existing_uids:
+        print(f"[Meili] Index '{index_name}' already exists.")
+        return client.index(index_name)
+
+    print(f"[Meili] Creating index '{index_name}' with primaryKey='id'...")
+    client.create_index(index_name, {"primaryKey": "id"})
+    return client.index(index_name)
+
+def configure_index(index):
+    """Configure searchable / filterable attributes for math logic chunks."""
     print("[Meili] Updating index settings...")
-    index.update_settings({
-        "searchableAttributes": [
+    index.update_searchable_attributes(
+        [
             "title",
-            "summary",
             "body",
-        ],
-        "filterableAttributes": [
+            "kind",
+            "source_tag",
             "chapter",
-            "part",
             "subchapter",
             "concept",
-            "content_kind",
+        ]
+    )
+    index.update_filterable_attributes(
+        [
+            "kind",
+            "source_tag",
             "level",
             "track",
-            "lang",
-            "tags",
-            "has_formula",
-        ],
-        "sortableAttributes": [
-            "order_in_section",
-        ],
-        "synonyms": {
-            "derivee": ["dérivée", "derivees", "dérivées"],
-            "dérivée": ["derivee", "derivees", "dérivées"],
-            "limite": ["limites"],
-            "limites": ["limite"],
-            "negation": ["négation"],
-            "négation": ["negation"],
-            "equivalence": ["équivalence"],
-            "équivalence": ["equivalence"],
-            "propostion": ["proposition"],
-            "proposition": ["propostion"],
-        }
-    })
+            "source_file",
+        ]
+    )
     print("[Meili] Settings updated.")
-    return index
 
-
+# ---------------------------------------------------------------------
+# INGEST
+# ---------------------------------------------------------------------
 def prepare_documents(chunks: List[Dict]) -> List[Dict]:
-    docs: List[Dict] = []
+    docs = []
     for ch in chunks:
         doc = {
-            # primary key
-            "id": ch["id"],
-
-            # text fields
-            "title": ch.get("title", ""),
-            "summary": ch.get("summary", ""),
-            "body": ch.get("body", ""),
-
-            # core metadata
-            "chapter": ch.get("chapter"),
-            "part": ch.get("part"),
-            "subchapter": ch.get("subchapter"),
-            "concept": ch.get("concept"),
-            "content_kind": ch.get("content_kind"),
+            "id": ch.get("id"),             # string id from JSONL
+            "title": ch.get("title"),
+            "body": ch.get("body"),
+            "kind": ch.get("kind"),
+            "source_tag": ch.get("source_tag"),
             "level": ch.get("level"),
             "track": ch.get("track"),
-            "lang": ch.get("lang"),
-            "tags": ch.get("tags", []),
-
-            # extra metadata (optional but useful)
-            "has_formula": ch.get("has_formula", False),
             "source_file": ch.get("source_file"),
-            "section_number": ch.get("section_number"),
-            "subsection_code": ch.get("subsection_code"),
-            "order_in_section": ch.get("order_in_section", 0),
+            # optional extras if you add them later:
+            "chapter": ch.get("chapter"),
+            "subchapter": ch.get("subchapter"),
+            "concept": ch.get("concept"),
         }
         docs.append(doc)
     return docs
 
-
 def ingest_meilisearch():
-    if MEILI_API_KEY is None:
-        raise SystemExit("MEILI_API_KEY not set in environment. Export it before running.")
-
-    project_root = Path(__file__).resolve().parents[1]
-    chunks_path = project_root / "data" / "logic" / "logic_chunks_v1.jsonl"
-
-    if not chunks_path.exists():
-        raise SystemExit(f"Chunks file not found: {chunks_path}")
-
-    chunks = load_chunks(chunks_path)
-    print(f"[Main] Loaded {len(chunks)} chunks from {chunks_path}")
+    chunks = load_chunks(DATA_PATH)
+    print(f"[Main] Loaded {len(chunks)} chunks from {DATA_PATH}")
 
     docs = prepare_documents(chunks)
     print(f"[Main] Prepared {len(docs)} documents for Meilisearch.")
 
     client = Client(MEILI_HOST, MEILI_API_KEY)
-    index = ensure_index(client, MEILI_INDEX)
+    
+    # This will now work correctly
+    index = ensure_index(client, INDEX_NAME)
+    
+    configure_index(index)
 
     print("[Meili] Adding documents...")
     task = index.add_documents(docs)
-    # TaskInfo object → use attribute, not dict
     print(f"[Meili] Add documents task UID: {task.task_uid}")
-
-    # Wait until indexed before searching
+    
+    # Optionally wait for completion (blocking):
     client.wait_for_task(task.task_uid)
     print("[Meili] Documents indexed.")
 
-
-def quick_test_search():
-    """
-    Simple lexical search test:
-    'C'est quoi une proposition logique ?'
-    Only on cours (no exercises).
-    """
-    if MEILI_API_KEY is None:
-        raise SystemExit("MEILI_API_KEY not set in environment.")
-
-    client = Client(MEILI_HOST, MEILI_API_KEY)
-    index = client.index(MEILI_INDEX)
-
-    query = "C'est quoi une proposition logique ?"
-    print(f"[Test] Query: {query}")
-
-    res = index.search(
-        query,
-        {
-            "limit": 5,
-            "filter": [
-                'level = "1BAC"',
-                'track = "SM"',
-                'chapter = "Notion de logique"',
-                'content_kind != "exercise"',
-            ],
-        },
-    )
-
-    hits = res.get("hits", [])
+    # Quick test query
+    print("[Test] Query: 'proposition logique'")
+    res = index.search("proposition logique", {"limit": 3})
+    
+    hits = res.get("hits", []) # Safety get
     print(f"[Test] Got {len(hits)} hits.")
-    for i, doc in enumerate(hits, start=1):
-        print(f"\n--- Hit #{i} ---")
-        print("id:   ", doc.get("id"))
-        print("title:", doc.get("title"))
-        print("kind: ", doc.get("content_kind"))
-        body_preview = (doc.get("body") or "").replace("\n", " ")
-        if len(body_preview) > 200:
-            body_preview = body_preview[:200] + "..."
-        print("body:", body_preview)
+    for i, hit in enumerate(hits, 1):
+        print(f"--- Hit #{i} ---")
+        print("id:   ", hit.get("id"))
+        print("kind: ", hit.get("kind"))
+        print("tag:  ", hit.get("source_tag"))
+        print("title:", hit.get("title"))
 
-
-def main():
-    ingest_meilisearch()
-    quick_test_search()
-
-
-
+# ---------------------------------------------------------------------
+# MAIN
+# ---------------------------------------------------------------------
 if __name__ == "__main__":
-    main()
+    ingest_meilisearch()

@@ -1,100 +1,104 @@
-## Docker setup – RAG MathTutor backend
+## Docker setup – RAG MathTutor backend (v3)
 
-This project uses three main services:
+Backend RAG pour le tuteur de maths **1ère Bac SM (Maroc)**.
 
-* **API**: FastAPI microservice (`mathtuto-api`)
-* **Vector store**: Qdrant
-* **Lexical search**: Meilisearch
+Trois services principaux :
 
-Meilisearch and Qdrant run via `docker-compose` (already in `infra/`).
-The FastAPI service runs as a separate Docker container.
+- **API** : microservice FastAPI (`mathtuto-api`)
+- **Vector store** : Qdrant
+- **Lexical search** : Meilisearch
 
-The frontend (Next.js) will call the API at:
+Meilisearch et Qdrant tournent via `docker-compose` (dossier `infra/`).
+L’API FastAPI tourne dans son propre conteneur Docker.
+
+Le frontend (Next.js) appelle l’API sur :
+
 `http://localhost:8000/explain`
 
 ---
 
-### 1. Prerequisites
+### 1. Prérequis
 
-* Docker and Docker Compose installed (Desktop version is fine on macOS).
-* A Google Gemini API key (for LLM explanations).
+- Docker + Docker Compose installés.
+- Une clé API Google **Gemini**.
+- Une clé API **Cohere** pour le reranker.
 
-You should already have:
+Déjà présents dans le repo :
 
-* `infra/docker-compose.yml` (for Meilisearch + Qdrant).
-* `Dockerfile` at the project root (for the API).
-* A working `requirements.txt`.
+- `infra/docker-compose.yml` (Meilisearch + Qdrant).
+- `Dockerfile` (image de l’API).
+- `requirements.txt`.
 
-Project layout (simplified):
+Structure simplifiée :
 
 ```text
 rag-math-mathtuto/
 │
 ├── src/
 │   ├── app.py                 # FastAPI app (entrypoint)
-│   ├── retrieval_service.py   # Hybrid retriever (Meili + Qdrant + reranker)
+│   ├── retrieval_service.py   # Hybrid retriever (Meili + Qdrant + Cohere)
 │   ├── llm_service.py         # Gemini LLM wrapper
 │   └── ...
 │
 ├── data/
 │   └── logic/
-│       └── logic_chunks_v1.jsonl   # Precomputed chunks
+│       └── logic_chunks_v3.jsonl   # Chunks OFFICIEL / COACH
 │
 ├── infra/
 │   └── docker-compose.yml     # Meilisearch + Qdrant
 │
-├── Dockerfile                 # API image definition
+├── docs/
+│   └── DOCKER.md
+│
+├── Dockerfile                 # Image API
 └── requirements.txt
 ```
 
 ---
 
-### 2. Environment variables
+### 2. Variables d’environnement
 
-The API container needs the following environment variables:
+L’API a besoin des variables suivantes :
 
-* `GEMINI_API_KEY` – your Gemini key.
-* `GEMINI_MODEL` – optional, default is `gemini-2.5-flash` in the code.
-* `MEILI_API_KEY` – the same key you use when starting Meilisearch.
-* `MEILI_HOST` – inside the container, points to Meilisearch.
-* `QDRANT_URL` – inside the container, points to Qdrant.
+Obligatoires :
 
-In the current Dockerfile, `MEILI_HOST` and `QDRANT_URL` defaults are:
+* `GEMINI_API_KEY` – clé Gemini.
+* `MEILI_API_KEY` – clé Meilisearch.
+* `COHERE_API_KEY` – clé Cohere.
 
-```text
-MEILI_HOST="http://host.docker.internal:7700"
-QDRANT_URL="http://host.docker.internal:6333"
-```
+Optionnelles (avec valeurs par défaut dans le code/Dockerfile) :
 
-On macOS/Windows, `host.docker.internal` is a special hostname that lets a container reach services running on the host machine (where Meili/Qdrant are running).
+* `GEMINI_MODEL` – par défaut `gemini-2.5-flash`.
+* `MEILI_HOST` – par défaut `http://host.docker.internal:7700`.
+* `QDRANT_URL` – par défaut `http://host.docker.internal:6333`.
+* `COHERE_RERANK_MODEL` – par défaut `rerank-multilingual-v3.0`.
 
-You can also override these values with `-e` when running the container.
+Sur macOS/Windows, `host.docker.internal` permet à un conteneur
+d’atteindre les services qui tournent sur la machine hôte.
 
 ---
 
-### 3. Start Meilisearch and Qdrant (infra)
+### 3. Démarrer Meilisearch + Qdrant
 
-From the project root:
+Depuis la racine du projet :
 
 ```bash
 cd infra
 docker compose up -d
 ```
 
-This starts:
+Cela démarre :
 
-* Meilisearch on `localhost:7700`
-* Qdrant on `localhost:6333`
+* Meilisearch sur `localhost:7700`
+* Qdrant sur `localhost:6333`
 
-Verify:
+Vérifier :
 
 ```bash
 docker compose ps
 ```
 
-You should see containers `meilisearch` and `qdrant` running.
-
-Return to the project root after that:
+Retourner ensuite à la racine :
 
 ```bash
 cd ..
@@ -102,20 +106,18 @@ cd ..
 
 ---
 
-### 4. Build the API Docker image
-
-At the project root (`rag-math-mathtuto/`):
+### 4. Builder l’image de l’API
 
 ```bash
 docker build -t mathtuto-api .
 ```
 
-This:
+Ce build :
 
-* Uses `python:3.11-slim` as a base.
-* Installs packages from `requirements.txt`.
-* Copies the project code into `/app` in the image.
-* Configures the container to run:
+* utilise `python:3.11-slim`,
+* installe `requirements.txt`,
+* copie le code dans `/app`,
+* configure la commande :
 
   ```bash
   uvicorn src.app:app --host 0.0.0.0 --port 8000
@@ -123,11 +125,9 @@ This:
 
 ---
 
-### 5. Run the API container
+### 5. Lancer le conteneur API
 
-Make sure Meilisearch and Qdrant are already running (`docker compose up -d` in `infra/`).
-
-From the project root:
+Assure-toi que Meilisearch et Qdrant tournent déjà (`docker compose up -d` dans `infra/`).
 
 ```bash
 docker run \
@@ -136,69 +136,61 @@ docker run \
   -e GEMINI_API_KEY="YOUR_REAL_GEMINI_KEY" \
   -e GEMINI_MODEL="gemini-2.5-flash" \
   -e MEILI_API_KEY="CHANGE_ME_STRONG_KEY" \
+  -e MEILI_HOST="http://host.docker.internal:7700" \
+  -e QDRANT_URL="http://host.docker.internal:6333" \
+  -e COHERE_API_KEY="YOUR_COHERE_KEY" \
+  -e COHERE_RERANK_MODEL="rerank-multilingual-v3.0" \
   mathtuto-api
 ```
 
-Notes:
+Notes :
 
-* `--rm` deletes the container when it stops (keeps things clean).
-* `-p 8000:8000` maps the container’s port 8000 to your host’s port 8000.
-* You can add overrides for `MEILI_HOST` / `QDRANT_URL` if needed:
-
-  ```bash
-  -e MEILI_HOST="http://host.docker.internal:7700" \
-  -e QDRANT_URL="http://host.docker.internal:6333" \
-  ```
+* `--rm` supprime le conteneur à l’arrêt.
+* `-p 8000:8000` expose l’API sur `localhost:8000`.
 
 ---
 
-### 6. Health check and test
+### 6. Health check & test RAG
 
-In a separate terminal:
+Health check :
 
 ```bash
 curl http://127.0.0.1:8000/health
 ```
 
-Expected:
+Attendu :
 
 ```json
 {"status":"ok"}
 ```
 
-Then test the main endpoint:
+Test RAG :
 
 ```bash
 curl -X POST "http://127.0.0.1:8000/explain" \
   -H "Content-Type: application/json" \
   -d '{
-        "question": "C\"est quoi une proposition logique ?",
+        "question": "Explique le rôle du quantificateur universel.",
         "level": "1BAC",
         "track": "SM",
-        "max_chunks": 4
+        "max_chunks": 6
       }'
 ```
 
-You should get a JSON response with:
+Tu dois obtenir un JSON avec :
 
-* `answer` – explanation generated by the LLM, grounded in the course.
-* `used_chunks` – list of chunk IDs and metadata used as context.
-
-This confirms:
-
-* The API container is running correctly.
-* It can reach Meilisearch and Qdrant via `host.docker.internal`.
-* It can reach Gemini via the provided `GEMINI_API_KEY`.
+* `answer` – texte en markdown (Fiche Concept).
+* `used_chunks` – liste de chunks utilisés (OFFICIEL / COACH).
 
 ---
 
-### 7. Stopping the stack
+### 7. Arrêter les services
 
-To stop the API container:
+Arrêter le conteneur API :
 
-* Use `Ctrl+C` in the terminal where `docker run mathtuto-api` is running.
+* `Ctrl+C` dans le terminal où `docker run mathtuto-api` tourne.
 
-To stop Meilisearch + Qdrant:
+Arrêter Meilisearch + Qdrant :
 
 ```bash
 cd infra
@@ -208,9 +200,9 @@ cd ..
 
 ---
 
-### 8. Optional: using an `.env` file
+### 8. Utiliser un fichier `.env` (optionnel)
 
-Instead of passing secrets on the command line, you can create a `.env` file at the project root:
+Créer un `.env` à la racine :
 
 ```env
 GEMINI_API_KEY=YOUR_REAL_GEMINI_KEY
@@ -218,9 +210,11 @@ GEMINI_MODEL=gemini-2.5-flash
 MEILI_API_KEY=CHANGE_ME_STRONG_KEY
 MEILI_HOST=http://host.docker.internal:7700
 QDRANT_URL=http://host.docker.internal:6333
+COHERE_API_KEY=YOUR_COHERE_KEY
+COHERE_RERANK_MODEL=rerank-multilingual-v3.0
 ```
 
-Then run:
+Lancer l’API :
 
 ```bash
 docker run \
@@ -230,24 +224,31 @@ docker run \
   mathtuto-api
 ```
 
-Make sure `.env` is listed in `.gitignore` so it is not committed to version control.
+Pense à ajouter `.env` dans `.gitignore`.
 
 ---
 
-### 9. How the frontend will use this
+### 9. Intégration avec le frontend
 
-From a Next.js app (or any client), you will call:
+N’importe quel client (Next.js, curl, Postman…) peut appeler :
 
-* `GET http://localhost:8000/health` to check the backend.
-* `POST http://localhost:8000/explain` with JSON payload:
+```http
+POST http://localhost:8000/explain
+Content-Type: application/json
+```
 
-  ```json
-  {
-    "question": "…",
-    "level": "1BAC",
-    "track": "SM",
-    "max_chunks": 4
-  }
-  ```
+Payload :
 
-The backend returns the explanation and the list of course chunks used. This API is the entrypoint you will integrate into your MathTutor SAAS.
+```json
+{
+  "question": "…",
+  "level": "1BAC",
+  "track": "SM",
+  "max_chunks": 6
+}
+```
+
+Réponse :
+
+* utilisée par l’app Next.js `Full-app---AI-Math-Tutor-main` dans la page `/chat`,
+* formatée en “Fiche Concept” (Définition, Intuition, Visualisation, Pièges).

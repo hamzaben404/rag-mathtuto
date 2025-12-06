@@ -1,14 +1,16 @@
-qdrant-client
+fastapi
+uvicorn
+pydantic
+requests
+python-dotenv
+# Cloud APIs
+google-generativeai>=0.3.0
+cohere
+# Vector DBs
 meilisearch
-sentence-transformers
-transformers
+qdrant-client>=1.9.0
+# Utilities
+numpy<2
 markdown
 beautifulsoup4
 unidecode
-python-dotenv
-uvicorn
-fastapi
-numpy<2
-google-genai
-fastapi
-uvicorn

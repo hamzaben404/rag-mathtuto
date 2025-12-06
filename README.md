@@ -1,67 +1,94 @@
 # MathTutor RAG – 1BAC Science Math (Maroc)
 
-Backend RAG service for a Math Tutor SAAS focused on **1ère année Bac Science Math (Maroc)**.
-This microservice provides **guided explanations of the official math course**, starting with the chapter *Notion de logique*.
+Backend RAG pour un tuteur de maths **1ère année Bac Science Math (SM – BIOF)**.
 
-It uses **hybrid retrieval** (Meilisearch + Qdrant + reranker) and **LLM generation** (Gemini) to produce accurate, grounded explanations.
+Ce microservice fournit des **explications guidées du cours officiel**, avec une
+double couche :
 
----
+- `[OFFICIEL]` – texte du cours.
+- `[COACH]` – intuitions, analogies, visualisations.
 
-## Features
-
-* **Hybrid Retrieval**
-
-  * Lexical search (Meilisearch – BM25)
-  * Dense semantic search (Qdrant + `intfloat/multilingual-e5-large`)
-  * Fusion + Reranking (`BAAI/bge-reranker-v2-m3`)
-* **RAG Generation**
-
-  * LLM: **Gemini 2.5 Flash**
-  * Custom system prompt: *prof de maths marocain, niveau 1BAC SM*
-  * Always grounded in course chunks (no hallucinations)
-* **FastAPI Microservice**
-
-  * `/health` – health check
-  * `/explain` – full RAG pipeline
-* **Dockerized**
-
-  * API container (`mathtuto-api`)
-  * Infra: Meilisearch + Qdrant (docker-compose)
+Il utilise un **RAG hybride** (Meilisearch + Qdrant + reranker Cohere) et **Gemini**
+pour générer des fiches d’explication.
 
 ---
 
-## Project Structure
+## ✨ Fonctionnalités
 
-```
+### Hybrid Retrieval
+
+- **Lexical** : Meilisearch (BM25, tolérant aux fautes FR).
+- **Vectoriel** : Qdrant + embeddings **Gemini `text-embedding-004`**.
+- **Fusion** : combinaison scores lexical / vectoriel.
+- **Reranking** : Cohere `rerank-multilingual-v3.0` pour trier les meilleurs chunks.
+
+### RAG Generation
+
+- **LLM** : **Gemini 2.5 Flash** (`gemini-2.5-flash`).
+- Rôle : prof de maths marocain (1BAC SM, français).
+- Toujours **ancré dans les chunks du cours** (pas d’hallucinations volontaires).
+- Forme de réponse : **Fiche Concept** :
+
+  1. 🎯 Définition  
+  2. 💡 Intuition (Coach)  
+  3. 🎨 Visualisation  
+  4. ⚠️ Pièges  
+
+- Refus de résoudre directement un exercice complet (anti-triche).
+
+### FastAPI Microservice
+
+- `GET /health` – health check.
+- `POST /explain` – exécute tout le pipeline RAG, retourne :
+
+  ```json
+  {
+    "answer": "…markdown…",
+    "used_chunks": [...]
+  }
+  ```
+
+### Docker
+
+* Image API : `mathtuto-api`.
+* Infra : `infra/docker-compose.yml` (Meilisearch + Qdrant).
+* Guide complet dans `docs/DOCKER.md`.
+
+---
+
+## 🗂 Structure du projet
+
+```text
 rag-math-mathtuto/
 ├── src/
 │   ├── app.py               # FastAPI entrypoint
-│   ├── retrieval_service.py # Hybrid search logic
-│   ├── llm_service.py       # Gemini wrapper
+│   ├── retrieval_service.py # Hybrid search (Meili + Qdrant + Cohere)
+│   ├── llm_service.py       # Wrapper Gemini + prompt pédagogique
 │   └── ...
 │
 ├── data/
 │   └── logic/
-│       ├── *.md             # Markdown course files
-│       └── logic_chunks_v1.jsonl
+│       ├── logique_cours_part*.md
+│       ├── logique_intuition_part*.md
+│       └── logic_chunks_v3.jsonl   # Chunks OFFICIEL / COACH
 │
 ├── infra/
 │   └── docker-compose.yml   # Meilisearch + Qdrant
 │
 ├── docs/
-│   └── DOCKER.md            # Full Docker instructions
+│   └── DOCKER.md            # Instructions Docker
 │
 ├── requirements.txt
-├── Dockerfile
+├── Dockerfile               # Image `mathtuto-api`
 ├── .gitignore
 └── LICENSE
 ```
 
 ---
 
-## Quickstart (Local, No Docker)
+## 🚀 Quickstart (local, sans Docker pour l’API)
 
-### 1) Install environment
+### 1) Environnement Python
 
 ```bash
 python3 -m venv .venv
@@ -69,7 +96,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2) Start Meilisearch + Qdrant
+### 2) Démarrer Meilisearch + Qdrant
 
 ```bash
 cd infra
@@ -77,74 +104,91 @@ docker compose up -d
 cd ..
 ```
 
-### 3) Set environment variables
+### 3) Variables d’environnement
 
 ```bash
-export GEMINI_API_KEY="YOUR_REAL_KEY"
+export GEMINI_API_KEY="YOUR_REAL_GEMINI_KEY"
 export GEMINI_MODEL="gemini-2.5-flash"
+
 export MEILI_HOST="http://localhost:7700"
 export MEILI_API_KEY="CHANGE_ME_STRONG_KEY"
+
 export QDRANT_URL="http://localhost:6333"
+
+export COHERE_API_KEY="YOUR_COHERE_KEY"
+export COHERE_RERANK_MODEL="rerank-multilingual-v3.0"
 ```
 
-### 4) Run FastAPI
+### 4) Lancer FastAPI
 
 ```bash
 uvicorn src.app:app --reload --port 8000
 ```
 
-### 5) Test
+### 5) Tester
+
+Health check :
 
 ```bash
 curl http://127.0.0.1:8000/health
 ```
 
+RAG :
+
 ```bash
 curl -X POST "http://127.0.0.1:8000/explain" \
   -H "Content-Type: application/json" \
-  -d '{"question":"C\"est quoi une proposition logique ?","level":"1BAC","track":"SM","max_chunks":4}'
+  -d '{
+        "question": "Explique le rôle du quantificateur universel.",
+        "level": "1BAC",
+        "track": "SM",
+        "max_chunks": 6
+      }'
 ```
 
 ---
 
-## Docker Usage
+## 🐳 Utilisation Docker (résumé)
 
-See **`docs/DOCKER.md`** for the full guide.
+Pour les détails complets, voir **`docs/DOCKER.md`**.
 
-Short version:
+Résumé :
 
 ```bash
-# Start Meili + Qdrant
+# 1) Démarrer Meili + Qdrant
 cd infra
 docker compose up -d
 cd ..
 
-# Build API container
+# 2) Builder l’image
 docker build -t mathtuto-api .
 
-# Run API
+# 3) Lancer l’API
 docker run \
   --rm \
   -p 8000:8000 \
-  -e GEMINI_API_KEY="AIzaSyBrOLkNpFBrAPwApRVqTJayrhDdnF7qM8Q" \
-  -e GEMINI_MODEL="gemini-2.5-flash" \
-  -e MEILI_API_KEY="CHANGE_ME_STRONG_KEY" \
+  --env-file .env \
   mathtuto-api
 ```
 
----
-
-## Roadmap
-
-* Add more chapters (fonctions, suites, géométrie…)
-* Improve retrieval quality (query rewriting, filters)
-* Add evaluation set (questions + ground truth)
-* Integrate FastAPI backend with Next.js frontend (MathTutor SAAS)
-* Add error handling + analytics
-* Deploy API + Meili + Qdrant on cloud (Railway / Render / GCP)
+Avec un `.env` contenant les clés nécessaires (Gemini, Meili, Qdrant, Cohere).
 
 ---
 
-## License
+## 🔗 Intégration avec le frontend MathTutor
 
-This project is licensed under the **MIT License**. See the `LICENSE` file.
+Le frontend Next.js (`Full-app---AI-Math-Tutor-main`) :
+
+* appelle `POST /api/chat` côté Next,
+* qui proxifie vers `POST http://localhost:8000/explain`,
+* et affiche la réponse dans une UI de chat (assistant-ui) pour les élèves
+  **1BAC SM – BIOF**.
+
+---
+
+## 📌 Roadmap
+
+* Ajouter d’autres chapitres (fonctions, dérivées, probas…).
+* Mettre en place un jeu de tests RAG (questions + réponses attendues).
+* Logs et métriques (pertinence des chunks, temps de réponse).
+* Déploiement cloud (API + Meili + Qdrant).

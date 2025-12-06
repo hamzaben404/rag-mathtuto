@@ -1,0 +1,46 @@
+.
+├── Dockerfile
+├── README.md
+├── app_streamlit.py
+├── data
+│   ├── logic
+│   │   ├── logic_chunks_v2.jsonl
+│   │   ├── logic_chunks_v3.jsonl
+│   │   ├── logic_intuition_Part1.md
+│   │   ├── logic_intuition_Part2.md
+│   │   ├── logique_cours_part1.md
+│   │   ├── logique_cours_part2.md
+│   │   └── structure.txt
+│   └── logicv0
+│       ├── logic_chunks_v1.jsonl
+│       ├── seance-1-1-1-notion-de-logique-partie-1-cours-3__20251115092652.md
+│       └── seance-1-2-1-notion-de-logique-partie-2-cours-3__20251115092701.md
+├── docs
+│   ├── DOCKER.md
+│   └── completSummary.md
+├── infra
+│   └── docker-compose.yml
+├── notebooks
+├── requirements.txt
+├── src
+│   ├── __init__.py
+│   ├── __pycache__
+│   │   ├── __init__.cpython-311.pyc
+│   │   ├── app.cpython-311.pyc
+│   │   ├── llm_service.cpython-311.pyc
+│   │   └── retrieval_service.cpython-311.pyc
+│   ├── app.py
+│   ├── build_chunks.py
+│   ├── embed_and_qdrant.py
+│   ├── ingest_meili.py
+│   ├── llm_service.py
+│   ├── retrieval_service.py
+│   ├── test_hybrid_retrieval.py
+│   └── test_hybrid_retrieval_v3.py
+├── streamlit_app.py
+├── structure.txt
+├── test_rag_questions.sh
+├── test_rag_results.txt
+└── tests
+
+10 directories, 34 files

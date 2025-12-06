@@ -1,210 +1,152 @@
 # src/llm_service.py
-from __future__ import annotations
-
-from dataclasses import dataclass
-from typing import List, Optional
+import time
 import os
+from typing import Dict, Any, List, Tuple
+import google.generativeai as genai
 
-from .retrieval_service import RetrievedChunk
+# CHANGE THIS LINE (add the dot)
+from .retrieval_service import (
+    hybrid_retrieve,
+    build_context_text,
+    simplify_chunks_for_api,
+)
 
-from google import genai  # Gemini Python SDK
+# ---------------------------------------------------------
+# GEMINI CONFIG
+# ---------------------------------------------------------
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
+if not GEMINI_API_KEY:
+    raise RuntimeError("GEMINI_API_KEY is not set in environment variables.")
+
+genai.configure(api_key=GEMINI_API_KEY)
+
+_gemini_model = None
 
 
-@dataclass
-class GeminiConfig:
+def get_gemini_model():
+    global _gemini_model
+    if _gemini_model is None:
+        _gemini_model = genai.GenerativeModel(GEMINI_MODEL_NAME)
+    return _gemini_model
+
+
+# ---------------------------------------------------------
+# PROMPT BUILDER (COACH + FICHE CONCEPT)
+# ---------------------------------------------------------
+
+def build_concept_card_prompt(
+    question: str,
+    level: str,
+    track: str,
+    context_text: str,
+) -> str:
     """
-    Configuration for the Gemini LLM layer.
+    Build the new Coach-style prompt with dual-layer context.
+    `context_text` must already contain [OFFICIEL] / [COACH] tags.
     """
+    prompt = f"""
+Rôle :
+Tu es "Le Coach Math", un tuteur expert pour des élèves marocains de niveau {level} {track} (BIOF).
+Ton but est de débloquer l'intuition des élèves sans faire les exercices à leur place.
+Ton ton est encourageant, direct, et tu utilises le "tu" ou le "on".
 
-    model: str = "gemini-2.5-flash"  # default text model for explanations
-    api_key: Optional[str] = None  # if None, read from GEMINI_API_KEY env var
+Contexte (RAG) :
+Tu disposes d'extraits du cours officiel et d'explications ci-dessous (les "Sources").
+- Utilise les sources [OFFICIEL] pour garantir la rigueur mathématique.
+- Utilise les sources [COACH] (si disponibles) pour tes analogies.
+- Si l'information est absente, dis : "Je ne peux pas répondre à partir du cours fourni."
+
+Règle d'Or (Anti-Triche) :
+Si l'élève te demande de résoudre un exercice spécifique (avec des nombres ou fonctions qui ne sont pas dans les Sources) :
+1. REFUSE poliment : "Je ne peux pas faire ton exercice à ta place."
+2. PIVOTE : Trouve l'exemple type le plus proche dans les Sources.
+3. GUIDE : Explique la méthode de cet exemple type et encourage l'élève à l'appliquer.
+
+Format de Réponse (La "Fiche Concept") :
+Structure ta réponse exactement comme suit :
+
+1. 🎯 C'est quoi ? (Définition) :
+- Donne la définition exacte ou le théorème (en français soutenu, comme dans l'examen).
+- Cite la source utilisée (ex: Source 1).
+
+2. 💡 L'Intuition (Le Coach) :
+- Explique "avec les mains". Pourquoi on a inventé ça ?
+- Utilise une ANALOGIE concrète (balance, vitesse, argent, etc.).
+- Utilise des phrases simples : "Imagine que...", "C'est comme...".
+
+3. 🎨 Visualisation :
+- Décris ce que l'élève doit voir dans sa tête (géométrie, courbe, schéma mental).
+- Si le sujet s'y prête (Logique, Barycentre, Cercle Trigo), tu peux insérer un tag d'image pertinent à la fin de la description, par exemple :
+  [Image of Table de vérité]
+  [Image of Barycentre]
+  [Image of Cercle Trigonométrique]
+
+4. ⚠️ Attention ! (Pièges) :
+- Quelle est l'erreur classique que tous les élèves font ? (ex: "Attention, l'implication inverse est fausse").
+
+Question de l'élève :
+\"\"\"{question}\"\"\"
+
+Sources disponibles :
+{context_text}
+"""
+    return prompt
 
 
-class LLMService:
-    """
-    LLM service powered by Google Gemini.
+# ---------------------------------------------------------
+# MAIN ENTRYPOINT USED BY FASTAPI
+# ---------------------------------------------------------
 
-    Public method:
-        generate_explanation(question: str, chunks: List[RetrievedChunk], ...) -> str
-    """
+def explain_math(
+    question: str,
+    level: str = "1BAC",
+    track: str = "SM",
+    max_chunks: int = 6,
+) -> Tuple[str, List[Dict[str, Any]]]:
+    
+    # 1) Retrieve chunks
+    # The timing print is inside hybrid_retrieve now
+    chunks = hybrid_retrieve(
+        question=question,
+        level=level,
+        track=track,
+        max_chunks=max_chunks,
+    )
 
-    def __init__(self, config: Optional[GeminiConfig] = None):
-        if config is None:
-            # Read config from environment if not provided
-            model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-            api_key = os.getenv("GEMINI_API_KEY")
-            config = GeminiConfig(model=model, api_key=api_key)
-
-        if not config.api_key:
-            # Note: genai.Client() can also pick up GEMINI_API_KEY automatically,
-            # but we explicitly require it to avoid silent misconfigurations.
-            raise RuntimeError(
-                "GEMINI_API_KEY is not set. "
-                "Export it in your environment before starting the app."
-            )
-
-        self.config = config
-        # Initialize Gemini client (Developer API)
-        # See: https://ai.google.dev/gemini-api/docs/quickstart
-        self.client = genai.Client(api_key=self.config.api_key)
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-    def generate_explanation(
-        self,
-        question: str,
-        chunks: List[RetrievedChunk],
-        level: str = "1BAC",
-        track: str = "SM",
-    ) -> str:
-        """
-        Generate a pedagogical explanation for the given question,
-        grounded in the provided retrieved chunks.
-        """
-
-        if not chunks:
-            return (
-                "Je n'ai pas trouvé de partie du cours correspondant à ta question. "
-                "Vérifie l'orthographe ou précise un peu plus ta demande."
-            )
-
-        # Build the text prompt
-        prompt = self._build_prompt(question, chunks, level, track)
-
-        try:
-            response = self.client.models.generate_content(
-                model=self.config.model,
-                contents=prompt,
-            )
-        except Exception as e:
-            # Fallback if the API fails
-            fallback = self._fallback_from_chunks(question, chunks, level, track)
-            return (
-                "Je rencontre un problème avec le modèle Gemini. "
-                "Je te donne une explication de base à partir du cours :\n\n"
-                + fallback
-                + f"\n\n(Détails techniques cachés: {e})"
-            )
-
-        # Extract text safely
-        text = getattr(response, "text", None)
-        if not text:
-            # Fallback if response has no text
-            return self._fallback_from_chunks(question, chunks, level, track)
-
-        return text.strip()
-
-    # ------------------------------------------------------------------
-    # Prompt construction
-    # ------------------------------------------------------------------
-    def _build_prompt(
-        self,
-        question: str,
-        chunks: List[RetrievedChunk],
-        level: str,
-        track: str,
-    ) -> str:
-        """
-        Build a single text prompt for Gemini using the question and course chunks.
-        """
-
-        # Keep only a few top chunks to avoid too long prompts (Gemini can handle a lot,
-        # but we don't need to send everything for small 1BAC questions).
-        top_chunks = chunks[:4]
-
-        # Format chunks as "source" text
-        context_parts = []
-        for idx, ch in enumerate(top_chunks, start=1):
-            title = ch.title.strip() if ch.title else ""
-            header = f"Source {idx}: {title}" if title else f"Source {idx}:"
-            body = ch.body.strip()
-            context_parts.append(f"{header}\n{body}")
-
-        context_text = "\n\n".join(context_parts)
-
-        # System-style instruction + user question + context
-        prompt = f"""
-            Rôle :
-            Tu es un professeur de mathématiques marocain, niveau {level} {track}.
-            Tu t’adresses à un élève de 1BAC Science Math qui révise son cours.
-
-            Contexte et règles RAG :
-            - Tu disposes d’extraits du cours officiels ci-dessous (les "Sources").
-            - Réponds UNIQUEMENT à partir de ces extraits.
-            - Si l’information demandée n’apparaît pas clairement dans les Sources,
-            dis explicitement que tu ne peux pas répondre à partir du cours
-            (par exemple : "Le cours fourni ne contient pas assez d’informations pour répondre précisément.").
-            - N’invente pas de nouveaux résultats, théorèmes ou notations qui ne figurent pas dans le cours.
-            - N’ajoute pas d’exercices corrigés : contente-toi d’expliquer le cours.
-
-            Objectif pédagogique :
-            - Répondre à la question de l’élève.
-            - Expliquer étape par étape avec un ton clair, bienveillant et rassurant.
-            - Rester au niveau 1BAC {track} (éviter le vocabulaire universitaire).
-            - Aider l’élève à COMPRENDRE, pas seulement à mémoriser.
-
-            Format de la réponse :
-            Donne ta réponse en 5 parties courtes :
-
-            1. Rappel du thème :
-            - Situe rapidement le sujet (par ex. proposition logique, quantificateur ∀, lois de Morgan, etc.).
-
-            2. Définition / idée clé :
-            - Donne la définition ou l’idée centrale, en reformulant le cours avec des mots simples.
-
-            3. Explication détaillée :
-            - Explique la définition ou la propriété de manière progressive.
-            - Relie ton explication aux Sources (par exemple : "Comme indiqué dans la Source 2...").
-
-            4. Exemple simple :
-            - Propose un petit exemple inspiré du cours ou directement tiré des Sources.
-            - Explique pourquoi cet exemple illustre bien la notion.
-
-            5. À retenir :
-            - Résume en 2–3 phrases ce que l’élève doit retenir.
-
-            Quand tu utilises une information issue d’un extrait, indique la Source entre parenthèses,
-            par exemple (Source 1) ou (Source 2), pour que l’élève sache d’où vient l’idée.
-
-            Question de l’élève :
-            \"\"\"{question}\"\"\"
-
-            Extraits du cours (Sources) :
-            {context_text}
-        """
-
-        # Gemini API accepts a simple string as 'contents' in generate_content.
-        return prompt.strip()
-
-    # ------------------------------------------------------------------
-    # Fallback if Gemini API fails
-    # ------------------------------------------------------------------
-    def _fallback_from_chunks(
-        self,
-        question: str,
-        chunks: List[RetrievedChunk],
-        level: str,
-        track: str,
-    ) -> str:
-        """
-        Simple deterministic explanation directly from chunks if Gemini is unavailable.
-        """
-        top_chunks = chunks[:3]
-        parts = []
-        for ch in top_chunks:
-            title = (ch.title or "").strip()
-            body = (ch.body or "").strip()
-            if title:
-                parts.append(f"**{title}**\n{body}")
-            else:
-                parts.append(body)
-
-        context_text = "\n\n".join(parts)
-
-        return (
-            f"Question : {question}\n\n"
-            f"Rappel du cours (niveau {level} {track}) :\n{context_text}\n\n"
-            "Essaie de lire ces extraits et de reformuler avec tes propres mots. "
-            "Quand Gemini sera disponible, je pourrai te donner une explication plus détaillée."
+    if not chunks:
+        no_data_answer = (
+            "Je ne peux pas répondre à partir du cours fourni. "
+            "Vérifie que le chapitre correspondant a bien été ajouté dans la base."
         )
+        return no_data_answer, []
+
+    # 2) Build Prompt
+    context_text = build_context_text(chunks)
+    prompt = build_concept_card_prompt(
+        question=question,
+        level=level,
+        track=track,
+        context_text=context_text,
+    )
+
+    # 3) Call Gemini
+    t_start = time.time()
+    print("⏱️ [Gemini] Sending request to Google API...")
+    
+    model = get_gemini_model()
+    resp = model.generate_content(prompt)
+    
+    print(f"⏱️ [Gemini] Generation took {time.time() - t_start:.4f}s")
+
+    answer_text = getattr(resp, "text", None)
+    if not answer_text and getattr(resp, "candidates", None):
+        answer_text = resp.candidates[0].content.parts[0].text
+    if not answer_text:
+        answer_text = "Une erreur s'est produite lors de la génération de la réponse."
+
+    used_chunks = simplify_chunks_for_api(chunks)
+
+    return answer_text, used_chunks
